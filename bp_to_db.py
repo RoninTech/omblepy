@@ -7,8 +7,11 @@ import logging
 
 # csv file name
 FILENAME = "user1.csv"
-USER1_AVG_BPM = 55
+USER1_AVG_BPM = 50
 USER2_AVG_BPM = 85
+MIN_BPM_DELTA = 5
+USER1_AVG_SYSTOLIC = 120
+USER2_AVG_SYSTOLIC = 110
 USER1_NAME = "Paul"
 USER2_NAME = "Helen"
 
@@ -57,6 +60,7 @@ with open(FILENAME, 'r') as csvfile:
     fields.append("User1 Off")
     fields.append("User2 Off")
     fields.append("Delta")
+    fields.append("Detector")
 
     # extracting each data row one by one
     for row in csvreader:
@@ -69,32 +73,44 @@ with open(FILENAME, 'r') as csvfile:
             db_time = db_time.astimezone(to_zone)
             #print("Time changed from: " + row[0] + " to: " + str(db_time))
             row[0] = db_time
-            #determine whose data it is and append name
-            user1_bpm_offset = abs(USER1_AVG_BPM - int(row[BPM_OFFSET]))
-            user2_bpm_offset = abs(USER2_AVG_BPM - int(row[BPM_OFFSET]))
-            if user1_bpm_offset < user2_bpm_offset :
+            # Determine whose data it is using BPM and append name
+            detector = "BPM"
+            user1_offset = abs(USER1_AVG_BPM - int(row[BPM_OFFSET]))
+            user2_offset = abs(USER2_AVG_BPM - int(row[BPM_OFFSET]))
+            if user1_offset < user2_offset :
                 username = USER1_NAME
             else:
                 username = USER2_NAME
 
+            user_delta = abs(user1_offset - user2_offset)
+            if user_delta < MIN_BPM_DELTA :
+                # To close to call user with BPM data.
+                # Determine whose data it is using diastolic and append name.
+                detector = "Diastolic"
+                user1_offset = abs(USER1_AVG_SYSTOLIC - int(row[SYSTOLIC_OFFSET]))
+                user2_offset = abs(USER2_AVG_SYSTOLIC - int(row[SYSTOLIC_OFFSET]))
+                if user1_offset <= user2_offset :
+                    username = USER1_NAME
+                else:
+                    username = USER2_NAME
+
+                user_delta = abs(user1_offset - user2_offset)
+
             # Add the username to the end of the row
             row.append(username)
-            row.append(user1_bpm_offset)
-            row.append(user2_bpm_offset)
-            row.append(abs(user1_bpm_offset - user2_bpm_offset))
+            row.append(user1_offset)
+            row.append(user2_offset)
+            row.append(user_delta)
+            row.append(detector)
             rows.append(row)
         else:
             print("Row dropped due to movement detected:" + str(row))
 
     # get total number of rows
     #print("Total no. of rows: %d"%(csvreader.line_num))
+    logger.debug(f"Total # of BP readings: {csvreader.line_num}")
 
-# printing the field names
-#print('Field names are:' + ', '.join(field for field in fields))
-
-# printing first 5 rows
-#print('\nFirst 5 rows are:\n')
-#for row in rows[:5]:
+# Print out the data points without movement.
 print("               ",end='')
 for col in fields:
     print("%10s"%col,end=" ")
@@ -104,6 +120,8 @@ for row in rows:
     for col in row:
         print("%10s"%col,end=" "),
     print('\r')
+
+#exit()
 
 # Now write the data to the influx database
 influx_client = InfluxDBClient(INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_USER, INFLUXDB_PASSWORD, INFLUXDB_NAME)
@@ -117,7 +135,7 @@ for row in rows:
     ifx_fields['ihb'] = int(row[IHB_OFFSET])
     measurement = "{}{}".format(INFLUXDB_MEASUREMENT, row[USER_OFFSET].lower())
     timestamp = row[TIMESTAMP_OFFSET]
-    logger.info(f"DB WRITE: Time: {timestamp}, Measurement: {measurement}, Fields: {ifx_fields}")
+    logger.info(f"DB WRITE: {measurement} Time: {timestamp}, {ifx_fields}")
     influx_client.write_points([{
                         "measurement": measurement,
                         "time": timestamp,
